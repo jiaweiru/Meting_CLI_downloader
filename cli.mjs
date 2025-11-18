@@ -125,7 +125,7 @@ async function runCookieFlow(options) {
   console.log(chalk.cyan(`[INFO] 🌐 Opening login page: ${config.url}`));
   console.log(chalk.cyan(`[INFO] 📘 Instructions: ${config.tips}`));
 
-  const browser = await chromium.launch({ headless: !!options.headless });
+  const browser = await launchBrowser(!!options.headless);
   const context = await browser.newContext();
 
   let cookies;
@@ -136,7 +136,22 @@ async function runCookieFlow(options) {
     await page.goto(config.url, { waitUntil: "domcontentloaded" });
     console.log(chalk.blue(`⏱️ Waiting up to ${options.timeout}s for successful login...`));
 
-    cookies = await waitForCookie(context, config, options.timeout);
+    let removeCloseListeners = () => {};
+    const closePromise = new Promise((_, reject) => {
+      const onClose = () =>
+        reject(new Error("Browser window was closed before cookies were captured."));
+      page.once("close", onClose);
+      context.once("close", onClose);
+      removeCloseListeners = () => {
+        page.off("close", onClose);
+        context.off("close", onClose);
+      };
+    });
+
+    cookies = await Promise.race([
+      waitForCookie(context, config, options.timeout),
+      closePromise,
+    ]).finally(removeCloseListeners);
   } finally {
     await browser.close().catch(() => {});
   }
@@ -152,6 +167,21 @@ async function runCookieFlow(options) {
   } else {
     console.log(chalk.green(`[OK] 🍪 Cookies captured:\n`));
     console.log(result);
+  }
+}
+
+async function launchBrowser(headless) {
+  const baseOptions = { headless };
+  try {
+    // Prefer local Chrome installation when available.
+    return await chromium.launch({ ...baseOptions, channel: "chrome" });
+  } catch (err) {
+    console.log(
+      chalk.yellow(
+        `[WARN] ⚠️ Failed to launch local Chrome (${err.message}), falling back to bundled Chromium.`
+      )
+    );
+    return chromium.launch(baseOptions);
   }
 }
 
