@@ -15,5 +15,13 @@
     "chalk": "^5.6.2",
     "commander": "^14.0.2",
     "playwright": "^1.56.1"
-  }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jiaweiru/Meting_CLI_downloader.git"
+  },
+  "bugs": {
+    "url": "https://github.com/jiaweiru/Meting_CLI_downloader/issues"
+  },
+  "homepage": "https://github.com/jiaweiru/Meting_CLI_downloader#readme"
 }
