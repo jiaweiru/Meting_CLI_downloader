@@ -1,6 +1,6 @@
 # Meting Downloader CLI 使用指南
 
-> 单文件 CLI，整合 Playwright Cookie 抓取与 `@meting/core` 下载功能，支持多平台关键词/专辑检索。  
+> 单文件 CLI，整合 Playwright Cookie 抓取与 `@meting/core` 下载功能，支持多平台关键词检索。  
 > 下载核心参考并封装自 [metowolf/Meting](https://github.com/metowolf/Meting)。
 > **English version: [README.md](README.md)**
 
@@ -28,7 +28,6 @@ npx playwright install chromium   # 安装可用的 Chromium
 | --- | --- |
 | `cookie` | 启动 Chromium 登录平台并导出 Cookie |
 | `keywords` | 以多个关键词批量搜索并下载歌曲 |
-| `album` | 按专辑 ID 或关键词下载整张专辑 |
 
 查看帮助：`node cli.mjs keywords --help`
 
@@ -58,7 +57,7 @@ node cli.mjs cookie \
 
 ## 🎧 下载模式
 
-所有下载命令共用以下参数：
+关键词下载共用以下参数：
 
 - `--platform`: `netease / tencent / kugou / baidu / kuwo`
 - `--cookie`: 可选，直接输入 Cookie 字符串
@@ -84,23 +83,9 @@ node cli.mjs keywords \
 - `--keywords`: 多个关键词，空格分隔
 - `--artist`: 仅保留指定歌手的独唱歌曲
 - `--limit`: 每个关键词最多下载多少首
+- 下载过程中会为每首歌显示实时进度条，并输出整体进度（已完成/总数），方便掌握任务进展。
+- 搜索按 30 条一页（与 Meting 默认一致）发起请求，如需超过 30 首歌曲会自动翻页，直到收集到足够曲目或没有更多结果。
 - 多个关键词的结果都会保存到同一个输出目录，如需区分可分批运行并更改 `--output`。
-
-### 💿 专辑模式
-
-```bash
-node cli.mjs album \
-  --platform netease \
-  --album-query "林俊杰 因你而在" "周杰伦 七里香" \
-  --album-id 12345678 \
-  --limit 25
-```
-
-- `--album-id`: 已知专辑 ID/MID 时可直接指定，支持多个值
-- `--album-query`: 通过关键词检索专辑，可填写多个关键词；NetEase 使用 `type=10`，Tencent 解析搜索结果中的 `album.list`
-- `--limit`: 每张专辑最多下载多少首歌
-
----
 
 ## 📁 目录结构
 

@@ -28,7 +28,6 @@ All actions run through `node cli.mjs <command>`.
 | --- | --- |
 | `cookie` | Launch Chromium, log into a platform, and export cookies |
 | `keywords` | Search multiple keywords and download matching songs |
-| `album` | Download full albums by ID or keyword search |
 
 Show help for any command with e.g. `node cli.mjs keywords --help`.
 
@@ -58,7 +57,7 @@ The CLI polls Playwright cookies until the required keys for the chosen platform
 
 ## Download Modes
 
-Shared options for every download command:
+Shared options for keyword downloads:
 
 - `--platform`: `netease / tencent / kugou / baidu / kuwo`
 - `--cookie`: optional inline cookie string
@@ -84,23 +83,9 @@ node cli.mjs keywords \
 - `--keywords`: space-separated keyword list
 - `--artist`: keep only songs where the artist list contains exactly the given name
 - `--limit`: maximum songs per keyword
+- Each song shows a live progress bar, and the CLI prints an overall `completed/total` counter so you always know how far along the batch is.
+- Searches are requested in pages of 30 results (matching Meting's default); when you ask for more than 30 songs the CLI automatically paginates until enough tracks are collected or results run out.
 - All results are stored in the same output folder. Use separate runs/output paths if you prefer per-keyword directories.
-
-### Album Mode
-
-```bash
-node cli.mjs album \
-  --platform netease \
-  --album-query "林俊杰 因你而在" "周杰伦 七里香" \
-  --album-id 12345678 \
-  --limit 25
-```
-
-- `--album-id`: supply one or more known album IDs/MIDs.
-- `--album-query`: search by keyword when the ID is unknown; multiple queries are resolved sequentially (NetEase uses `type=10`, Tencent parses `album.list` entries).
-- `--limit`: cap the number of tracks downloaded per album.
-
----
 
 ## Project Structure
 

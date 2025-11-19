@@ -3,6 +3,7 @@ import fs from "fs";
 import fsp from "fs/promises";
 import path from "path";
 import { fileURLToPath } from "url";
+import { once } from "events";
 import chalk from "chalk";
 import { chromium } from "playwright";
 import { Command, InvalidOptionArgumentError } from "commander";
@@ -47,9 +48,10 @@ const COOKIE_PLATFORMS = {
 
 const SUPPORTED_PLATFORMS = ["netease", "tencent", "kugou", "baidu", "kuwo"];
 
-const program = new Command().description(
-  "🥰 Meting Downloader CLI"
-);
+const program = new Command().description("🥰 Meting Downloader CLI");
+const SEARCH_PAGE_SIZE = 30;
+const SEARCH_TYPE_SONG = 1;
+const PROGRESS_BAR_WIDTH = 24;
 
 program
   .command("cookie")
@@ -78,24 +80,15 @@ const keywordCommand = program
   .option("--artist <name>", "🎤 Keep only songs solo-performed by the specified artist")
   .option("--limit <n>", "🔢 Maximum number of songs per keyword", parseInteger("limit"), 30);
 attachDownloadOptions(keywordCommand);
-keywordCommand.action((options) => runDownload(options, runKeywordMode));
-
-const albumCommand = program
-  .command("album")
-  .description("💿 Download a full album by ID or keyword search")
-  .option("--album-id <id...>", "🆔 Album ID/MID")
-  .option(
-    "--album-query <text...>",
-    "🔍 Album keyword search）"
-  )
-  .option(
-    "--limit <n>",
-    "🔢 Maximum number of tracks to download",
-    parseInteger("limit"),
-    100
-  );
-attachDownloadOptions(albumCommand);
-albumCommand.action((options) => runDownload(options, runAlbumMode));
+keywordCommand.action(async (options) => {
+  try {
+    const ctx = await createDownloadContext(options);
+    console.log(chalk.cyan(`🚀 Starting download task...\n`));
+    await downloadByKeywords(ctx);
+  } catch (err) {
+    fail(err);
+  }
+});
 
 await program.parseAsync(process.argv);
 
@@ -224,17 +217,7 @@ function formatCookies(cookies, fmt) {
   return cookies.map((cookie) => `${cookie.name}=${cookie.value}`).join("; ");
 }
 
-async function runDownload(options, handler) {
-  try {
-    const ctx = await buildDownloadContext(options);
-    console.log(chalk.cyan(`🚀 Starting download task...\n`));
-    await handler(ctx);
-  } catch (err) {
-    fail(err);
-  }
-}
-
-async function buildDownloadContext(options) {
+async function createDownloadContext(options) {
   let cookie = null;
   if (options.cookie) {
     cookie = options.cookie.trim();
@@ -257,7 +240,16 @@ async function buildDownloadContext(options) {
 
   console.log(chalk.gray(`📁 Output directory: ${outputDir}`));
 
-  return { meting, cookie, options, outputDir };
+  return {
+    meting,
+    cookie,
+    options,
+    outputDir,
+    progress: {
+      completed: 0,
+      total: 0,
+    },
+  };
 }
 
 async function readCookieFile(file) {
@@ -271,121 +263,89 @@ async function readCookieFile(file) {
   return trimmed;
 }
 
-async function runKeywordMode(ctx) {
-  const { meting, options } = ctx;
-
-  for (const keyword of options.keywords) {
-    console.log(chalk.cyan(`🔍 Searching for: "${keyword}"`));
-
-    const raw = await meting.search(keyword, { limit: options.limit });
-    await sleep(options.delay);
-
-    let songs = parseSongList(raw);
-
-    if (!songs.length) {
-      console.log(chalk.yellow(`⚠️  No songs found for "${keyword}"`));
-      continue;
-    }
-
-    if (options.artist) {
-      songs = songs.filter((song) =>
-        isSoloMatch(song, options.artist.trim())
-      );
-      console.log(chalk.gray(`🎤 After filtering by artist: ${songs.length} result(s)`));
-    }
-
-    console.log(chalk.green(`🎵 Preparing to download ${songs.slice(0, options.limit).length} song(s)...`));
-    await downloadSongs(ctx, songs.slice(0, options.limit));
+async function downloadByKeywords(ctx) {
+  for (const keyword of ctx.options.keywords) {
+    await downloadByKeyword(ctx, keyword);
   }
 }
 
-async function runAlbumMode(ctx) {
-  const { meting, options } = ctx;
+async function downloadByKeyword(ctx, keyword) {
+  console.log(chalk.cyan(`🔍 Searching for: "${keyword}"`));
 
-  const albumIds = Array.isArray(options.albumId) ? [...options.albumId] : [];
-  const albumQueries = Array.isArray(options.albumQuery) ? options.albumQuery : [];
-
-  if (!albumIds.length && !albumQueries.length) {
-    throw new Error("You must specify at least one --album-id or --album-query.");
+  let songs = await searchKeywordSongs(ctx, keyword);
+  if (!songs.length) {
+    console.log(chalk.yellow(`⚠️  No songs found for "${keyword}"`));
+    return;
   }
 
-  const resolvedIds = [];
-
-  for (const query of albumQueries) {
-    const id = await resolveAlbumByQuery(ctx, query);
-    if (id) resolvedIds.push(id);
+  if (ctx.options.artist) {
+    songs = songs.filter((song) => isSoloMatch(song, ctx.options.artist.trim()));
+    console.log(chalk.gray(`🎤 After filtering by artist: ${songs.length} result(s)`));
   }
 
-  resolvedIds.push(...albumIds);
+  const planned = songs.slice(0, ctx.options.limit);
+  if (!planned.length) {
+    console.log(chalk.yellow(`⚠️  No downloadable songs remain for "${keyword}".`));
+    return;
+  }
 
-  for (const albumId of resolvedIds) {
-    console.log(chalk.cyan(`💿 Fetching album: ${albumId}`));
+  ctx.progress.total += planned.length;
+  console.log(chalk.green(`🎵 Preparing to download ${planned.length} song(s)...`));
+  await downloadTracks(ctx, planned);
+}
 
-    const raw = await meting.album(albumId);
-    await sleep(options.delay);
+async function searchKeywordSongs(ctx, keyword) {
+  const target = Math.max(0, ctx.options.limit || 0);
+  if (!target) return [];
 
-    const songs = parseSongList(raw);
-    if (!songs.length) {
-      console.log(chalk.yellow(`⚠️  Album ${albumId} has no downloadable tracks.`));
-      continue;
+  const collected = [];
+  let page = 1;
+
+  while (collected.length < target) {
+    console.log(chalk.gray(`  • Fetching page ${page} (limit ${SEARCH_PAGE_SIZE})`));
+
+    const raw = await ctx.meting.search(keyword, {
+      type: SEARCH_TYPE_SONG,
+      page,
+      limit: SEARCH_PAGE_SIZE,
+    });
+    await sleep(ctx.options.delay);
+
+    const batch = parseSongList(raw);
+    if (!batch.length) break;
+
+    collected.push(...batch);
+
+    if (batch.length < SEARCH_PAGE_SIZE) {
+      break;
     }
 
-    console.log(
-      chalk.green(`🎵 Preparing to download ${songs.slice(0, options.limit).length} track(s)...`)
-    );
-    await downloadSongs(ctx, songs.slice(0, options.limit));
+    page += 1;
   }
+
+  return collected.slice(0, target);
 }
 
-async function resolveAlbumByQuery(ctx, query) {
-  console.log(chalk.cyan(`🔍 Searching album by keyword: "${query}"`));
-
-  const searcher = new Meting(ctx.options.platform);
-  searcher.format(false);
-  if (ctx.cookie) {
-    searcher.cookie(ctx.cookie);
-  }
-
-  const params = {};
-  if (ctx.options.platform === "netease") params.type = 10;
-
-  const raw = await searcher.search(query, params);
-  await sleep(ctx.options.delay);
-
-  const payload = safeParseJSON(raw);
-  const candidates = normalizeAlbumCandidates(payload, ctx.options.platform);
-
-  if (!candidates.length) {
-    console.log(chalk.yellow(`⚠️  No album found for query "${query}".`));
-    return null;
-  }
-
-  const chosen = candidates[0];
-
-  console.log(
-    chalk.green(`📀 Selected album ${chosen.id}: ${chosen.name} - ${chosen.artist}`)
-  );
-
-  return chosen.id;
-}
-
-async function downloadSongs(ctx, songs) {
+async function downloadTracks(ctx, songs) {
   for (const song of songs) {
     const label = `${song.name} - ${(song.artist || []).join("/")}`;
-    console.log(chalk.blue(`➡️  Downloading: ${label}`));
+    const order = ctx.progress.completed + 1;
+    console.log(chalk.blue(`➡️  Downloading (${order}/${ctx.progress.total}): ${label}`));
 
     try {
-      await downloadSingle(ctx, song);
+      await downloadTrack(ctx, song, label);
       console.log(chalk.green(`  ✓ Completed: ${label}`));
     } catch (err) {
       console.log(chalk.red(`  ✗ Failed: ${label} (${err.message})`));
+    } finally {
+      ctx.progress.completed += 1;
+      logOverallProgress(ctx);
+      await sleep(ctx.options.delay);
     }
-
-    await sleep(ctx.options.delay);
   }
 }
 
-async function downloadSingle(ctx, song) {
+async function downloadTrack(ctx, song, label) {
   const raw = await ctx.meting.url(song.url_id, ctx.options.quality);
   await sleep(ctx.options.delay);
 
@@ -407,43 +367,174 @@ async function downloadSingle(ctx, song) {
   const res = await fetch(url);
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
 
-  const buffer = Buffer.from(await res.arrayBuffer());
-  await fsp.writeFile(target, buffer);
+  const totalBytes = Number(res.headers.get("content-length") || 0);
+  const progress = createSongProgressRenderer(label);
+  let received = 0;
+
+  try {
+    await writeStreamToFile(res.body, target, (chunkSize) => {
+      received += chunkSize;
+      progress.update(received, totalBytes);
+    });
+  } finally {
+    progress.complete(received, totalBytes || received);
+  }
 }
 
-/* ---- rest of helper functions unchanged except error text ---- */
+async function writeStreamToFile(body, target, onChunk) {
+  if (!body) throw new Error("Empty response body.");
+
+  if (typeof body.getReader === "function") {
+    const reader = body.getReader();
+    const output = fs.createWriteStream(target);
+
+    await new Promise((resolve, reject) => {
+      output.on("error", reject);
+
+      const pump = async () => {
+        try {
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            if (value) {
+              const chunk = Buffer.from(value);
+              if (!output.write(chunk)) {
+                await once(output, "drain");
+              }
+              onChunk(chunk.length);
+            }
+          }
+          output.end(resolve);
+        } catch (err) {
+          output.destroy();
+          reject(err);
+        }
+      };
+
+      pump();
+    });
+    return;
+  }
+
+  if (typeof body.pipe === "function" && typeof body.on === "function") {
+    await new Promise((resolve, reject) => {
+      const output = fs.createWriteStream(target);
+      let finished = false;
+
+      const cleanup = (err) => {
+        if (finished) return;
+        finished = true;
+        output.destroy();
+        if (typeof body.destroy === "function") body.destroy();
+        reject(err);
+      };
+
+      body.on("data", (chunk) => {
+        const size = Buffer.isBuffer(chunk)
+          ? chunk.length
+          : typeof chunk === "string"
+          ? Buffer.byteLength(chunk)
+          : chunk?.length || chunk?.byteLength || 0;
+        onChunk(size);
+      });
+      body.on("error", cleanup);
+      output.on("error", cleanup);
+      output.on("finish", () => {
+        if (finished) return;
+        finished = true;
+        resolve();
+      });
+
+      body.pipe(output);
+    });
+    return;
+  }
+
+  throw new Error("Unsupported response body.");
+}
 
 function parseSongList(raw) {
   const payload = safeParseJSON(raw);
   return Array.isArray(payload) ? payload : [];
 }
 
-function normalizeAlbumCandidates(payload, platform) {
-  if (!payload) return [];
+function logOverallProgress(ctx) {
+  const progress = ctx.progress;
+  if (!progress || !progress.total) return;
 
-  if (platform === "netease") {
-    return (payload.result?.albums || []).map((album) => ({
-      id: album.id,
-      name: album.name,
-      artist:
-        album.artist?.name ||
-        (album.artists ? album.artists.map((a) => a.name).join("/") : ""),
-    }));
+  const completed = Math.min(progress.completed, progress.total);
+  const percent = ((completed / progress.total) * 100).toFixed(1);
+  console.log(chalk.cyan(`📊 Overall progress: ${completed}/${progress.total} (${percent}%)`));
+}
+
+function createSongProgressRenderer(label) {
+  let lastLine = "";
+  let active = false;
+
+  return {
+    update(current, total) {
+      lastLine = formatSongProgress(current, total, label);
+      process.stdout.write(`\r${lastLine}`);
+      active = true;
+    },
+    complete(current, total) {
+      if (!active) return;
+      lastLine = formatSongProgress(current, total, label);
+      process.stdout.write(`\r${lastLine}\n`);
+      active = false;
+    },
+  };
+}
+
+function formatSongProgress(current, total, label) {
+  const bar = renderProgressBar(current, total);
+  const bytes = formatByteProgress(current, total);
+  const suffix = label ? ` ${truncateLabel(label, 40)}` : "";
+  return chalk.gray(`    ${bar} ${bytes}${suffix}`);
+}
+
+function renderProgressBar(current, total) {
+  if (!Number.isFinite(current) || current < 0) current = 0;
+
+  if (!total || !Number.isFinite(total) || total <= 0) {
+    const position = Math.floor((Date.now() / 120) % PROGRESS_BAR_WIDTH);
+    const segments = new Array(PROGRESS_BAR_WIDTH).fill("-");
+    segments[position] = "#";
+    return `[${segments.join("")}] --%`;
   }
 
-  if (platform === "tencent") {
-    return (payload.data?.album?.list || [])
-      .map((album) => ({
-        id: album.mid || album.albumMid,
-        name: album.name || album.albumName,
-        artist: Array.isArray(album.singer)
-          ? album.singer.map((s) => s.name).join("/")
-          : album.singerName || "",
-      }))
-      .filter((album) => album.id && album.name);
+  const ratio = Math.min(current / total, 1);
+  const filled = Math.round(ratio * PROGRESS_BAR_WIDTH);
+  const empty = Math.max(PROGRESS_BAR_WIDTH - filled, 0);
+  return `[${"#".repeat(filled)}${"-".repeat(empty)}] ${(ratio * 100).toFixed(1)}%`;
+}
+
+function formatByteProgress(current, total) {
+  const currentText = formatBytes(current);
+  if (total && Number.isFinite(total) && total > 0) {
+    return `${currentText} / ${formatBytes(total)}`;
+  }
+  return `${currentText}`;
+}
+
+function formatBytes(bytes) {
+  if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let value = bytes;
+  let idx = 0;
+
+  while (value >= 1024 && idx < units.length - 1) {
+    value /= 1024;
+    idx += 1;
   }
 
-  return [];
+  const precision = value >= 10 || idx === 0 ? 0 : 1;
+  return `${value.toFixed(precision)} ${units[idx]}`;
+}
+
+function truncateLabel(text, max = 40) {
+  if (!text) return "";
+  return text.length > max ? `${text.slice(0, max - 3)}...` : text;
 }
 
 function isSoloMatch(song, artist) {
