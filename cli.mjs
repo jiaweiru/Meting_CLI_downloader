@@ -83,10 +83,10 @@ keywordCommand.action((options) => runDownload(options, runKeywordMode));
 const albumCommand = program
   .command("album")
   .description("💿 Download a full album by ID or keyword search")
-  .option("--album-id <id...>", "🆔 Album ID/MID (可多项，可重复使用)")
+  .option("--album-id <id...>", "🆔 Album ID/MID")
   .option(
     "--album-query <text...>",
-    "🔍 Album keyword search（多个关键词将依次检索）"
+    "🔍 Album keyword search）"
   )
   .option(
     "--limit <n>",
