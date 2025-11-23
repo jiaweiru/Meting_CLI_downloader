@@ -1,7 +1,7 @@
 # Meting Downloader CLI
 
-Single-file CLI that combines Playwright cookie capture with the `@meting/core` downloader.  
-Download core is adapted from and built atop [metowolf/Meting](https://github.com/metowolf/Meting).  
+Single-file CLI that unifies Playwright cookie capture with the `@meting/core` downloader so you can log in, search, and bulk-download from one entry point.  
+Download logic is adapted from [metowolf/Meting](https://github.com/metowolf/Meting).  
 **中文说明请见 [README.zh.md](README.zh.md)。**
 
 ---
@@ -10,26 +10,26 @@ Download core is adapted from and built atop [metowolf/Meting](https://github.co
 
 ```bash
 cd Meting_CLI_downloader
-npm init -y                       # if you cloned only the sources
+npm init -y                     # skip if package.json already exists
 npm install
-npx playwright install chromium   # install a compatible Chromium build
+npx playwright install chromium # ensure Chromium is available
 ```
 
 - Requires Node.js ≥ 18.
-- Playwright must have Chromium installed before the `cookie` command can launch a browser.
+- Install Playwright Chromium before running the `cookie` command.
 
 ---
 
-## Command Overview
+## Commands
 
-All actions run through `node cli.mjs <command>`.
+All commands use `node cli.mjs <command>`.
 
 | Command | Description |
 | --- | --- |
-| `cookie` | Launch Chromium, log into a platform, and export cookies |
-| `keywords` | Search multiple keywords and download matching songs |
+| `cookie` | Launch Chromium, log in, and export cookies |
+| `keywords` | Search multiple keywords and download the matches |
 
-Show help for any command with e.g. `node cli.mjs keywords --help`.
+Show help with `node cli.mjs keywords --help`.
 
 ---
 
@@ -55,21 +55,25 @@ The CLI polls Playwright cookies until the required keys for the chosen platform
 
 ---
 
-## Download Modes
+## Keyword Downloads
 
-Shared options for keyword downloads:
+Command: `node cli.mjs keywords`
 
-- `--platform`: `netease / tencent / kugou / baidu / kuwo`
-- `--cookie`: optional inline cookie string
-- `--cookie-file`: optional path to a cookie file
-- `--quality`: bitrate in kbps (default 320)
-- `--delay`: fixed delay after each request in ms (default 1000)
-- `--output`: download directory (default `downloads/`)
-- `--overwrite`: overwrite existing files instead of skipping
+Options:
 
-> Without cookies, all API calls are anonymous and may return only public/low-bitrate content. Supply cookies to access full catalogs and premium bitrates.
+- `--keywords`: required. Provide multiple keywords separated by spaces; each is searched independently.
+- `--artist`: keep only solo tracks performed by the given artist (optional).
+- `--limit`: maximum downloads per keyword, default 30.
+- `--platform`: one of `netease / tencent / kugou / baidu / kuwo`.
+- `--cookie` / `--cookie-file`: inject cookies inline or from disk (both allowed; inline string takes precedence).
+- `--quality`: target bitrate in kbps, default 320.
+- `--delay`: delay between requests in milliseconds, default 1000.
+- `--output`: destination directory, default `downloads/`.
+- `--overwrite`: overwrite existing files instead of skipping.
 
-### Keyword Mode
+> Without cookies the CLI uses anonymous requests, which usually return only public or low bitrate tracks.
+
+Example:
 
 ```bash
 node cli.mjs keywords \
@@ -82,19 +86,21 @@ node cli.mjs keywords \
 
 - `--keywords`: space-separated keyword list
 - `--artist`: keep only songs where the artist list contains exactly the given name
-- `--limit`: maximum songs per keyword
-- Each song shows a live progress bar, and the CLI prints an overall `completed/total` counter so you always know how far along the batch is.
-- Searches are requested in pages of 30 results (matching Meting's default); when you ask for more than 30 songs the CLI automatically paginates until enough tracks are collected or results run out.
-- All results are stored in the same output folder. Use separate runs/output paths if you prefer per-keyword directories.
+- Keywords are space-separated; combine multiple terms as needed.
+- `--artist` filters out collaborations that don't match the exact artist name.
+- Pagination happens in blocks of 30 tracks (Meting's default) until enough results are collected or the API is exhausted.
+- Every song has its own progress bar plus a global `completed/total` counter for the batch.
+- All keywords write into the same directory; run multiple batches with different `--output` paths if you prefer per-keyword folders.
 
 ## Project Structure
 
 ```
 Meting_CLI_downloader/
-├── cli.mjs      # main CLI entry point
+├── cli.mjs
 ├── package.json
 ├── package-lock.json
-└── README*.md
+├── README.md
+└── README.zh.md
 ```
 
 Extend the CLI by editing `cli.mjs` to add new commands or tweak options.
